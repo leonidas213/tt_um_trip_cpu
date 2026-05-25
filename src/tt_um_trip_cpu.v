@@ -1255,19 +1255,19 @@ module qspi_memory_interface (
   // increase INIT_WAIT_BITS too.
   localparam integer INIT_CLK_HZ      = 1;
   localparam integer INIT_WAIT_BITS   = 22;
-  //`ifdef COCOTB_SIM_FAST_INIT
+  `ifdef COCOTB_SIM_FAST_INIT
   localparam [INIT_WAIT_BITS-1:0] INIT_POWER_WAIT_CYCLES      = 22'd02;
   localparam [INIT_WAIT_BITS-1:0] INIT_RESET_WAIT_CYCLES      = 22'd02;
   localparam [INIT_WAIT_BITS-1:0] INIT_FLASH_SR2_WAIT_CYCLES  = 22'd02;
   localparam [INIT_WAIT_BITS-1:0] INIT_FLASH_CONT_WAIT_CYCLES = 22'd02;
   localparam [INIT_WAIT_BITS-1:0] INIT_CMD_GAP_CYCLES         = 22'd02;
-  /*`else
+  `else
       localparam [INIT_WAIT_BITS-1:0] INIT_POWER_WAIT_CYCLES      = (INIT_CLK_HZ / 1000) * 10;
       localparam [INIT_WAIT_BITS-1:0] INIT_RESET_WAIT_CYCLES      = (INIT_CLK_HZ / 1000) * 2;
       localparam [INIT_WAIT_BITS-1:0] INIT_FLASH_SR2_WAIT_CYCLES  = (INIT_CLK_HZ / 1000) * 40;
       localparam [INIT_WAIT_BITS-1:0] INIT_FLASH_CONT_WAIT_CYCLES = (INIT_CLK_HZ / 1000) * 1;
       localparam [INIT_WAIT_BITS-1:0] INIT_CMD_GAP_CYCLES         = (INIT_CLK_HZ / 1000000) * 5 + 4;
-  `endif*/
+  `endif
 
   function [INIT_WAIT_BITS-1:0] init_gap_cycles;
     input [3:0] stp;

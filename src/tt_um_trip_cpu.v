@@ -350,17 +350,9 @@ module tiny_core (
       default: rb_value = 16'd0;
     endcase
 
-    case (ev_id)
-      3'd0: event_selected = event_flags[0];
-      3'd1: event_selected = event_flags[1];
-      3'd2: event_selected = event_flags[2];
-      3'd3: event_selected = event_flags[3];
-      3'd4: event_selected = event_flags[4];
-      3'd5: event_selected = event_flags[5];
-      3'd6: event_selected = event_flags[6];
-      3'd7: event_selected = event_flags[7];
-      default: event_selected = 1'b0;
-    endcase  end
+    // Direct indexed event select is smaller than an explicit 8-way case.
+    event_selected = event_flags[ev_id];
+  end
 
   always @(posedge clk or negedge rst_n)
   begin
@@ -818,7 +810,7 @@ module shared_spi_mem_arbiter3 (
     input wire [15:0] addr0,
     input wire [15:0] wdata0,
     output reg done0,
-    output reg [15:0] rdata0,
+    output wire [15:0] rdata0,
 
     input wire req1,
     input wire write1,
@@ -826,7 +818,7 @@ module shared_spi_mem_arbiter3 (
     input wire [15:0] addr1,
     input wire [15:0] wdata1,
     output reg done1,
-    output reg [15:0] rdata1,
+    output wire [15:0] rdata1,
 
     input wire req2,
     input wire write2,
@@ -834,7 +826,7 @@ module shared_spi_mem_arbiter3 (
     input wire [15:0] addr2,
     input wire [15:0] wdata2,
     output reg done2,
-    output reg [15:0] rdata2,
+    output wire [15:0] rdata2,
 
     // qspi_memory_interface side
     input wire        spi_ready,
@@ -859,7 +851,6 @@ module shared_spi_mem_arbiter3 (
   reg [1:0] rr_ptr;
   reg [1:0] active_idx;
   reg       active_write;
-  reg [15:0] active_wdata;
 
   reg grant_valid;
   reg [1:0] grant_idx;
@@ -868,6 +859,12 @@ module shared_spi_mem_arbiter3 (
   reg sel_target;
   reg [15:0] sel_addr;
   reg [15:0] sel_wdata;
+
+  // All cores can see the shared memory data bus. Only the core with done=1
+  // commits it, so three separate 16-bit rdata registers are unnecessary.
+  assign rdata0 = spi_data_out;
+  assign rdata1 = spi_data_out;
+  assign rdata2 = spi_data_out;
 
   always @(*)
   begin
@@ -936,15 +933,10 @@ module shared_spi_mem_arbiter3 (
       rr_ptr  <= 2'd0;
       active_idx <= 2'd0;
       active_write <= 1'b0;
-      active_wdata <= 16'd0;
 
       done0 <= 1'b0;
       done1 <= 1'b0;
       done2 <= 1'b0;
-
-      rdata0 <= 16'd0;
-      rdata1 <= 16'd0;
-      rdata2 <= 16'd0;
 
       spi_st      <= 1'b0;
       spi_ld      <= 1'b0;
@@ -968,7 +960,6 @@ module shared_spi_mem_arbiter3 (
           begin
             active_idx   <= grant_idx;
             active_write <= sel_write;
-            active_wdata <= sel_wdata;
             state        <= S_START;
           end
         end
@@ -1006,21 +997,18 @@ module shared_spi_mem_arbiter3 (
           case (active_idx)
             2'd0:
             begin
-              rdata0 <= active_write ? active_wdata : spi_data_out;
               done0  <= 1'b1;
               rr_ptr <= 2'd1;
             end
 
             2'd1:
             begin
-              rdata1 <= active_write ? active_wdata : spi_data_out;
               done1  <= 1'b1;
               rr_ptr <= 2'd2;
             end
 
             default:
             begin
-              rdata2 <= active_write ? active_wdata : spi_data_out;
               done2  <= 1'b1;
               rr_ptr <= 2'd0;
             end
@@ -1076,7 +1064,7 @@ module qspi_memory_interface (
     input  wire        spi_target,    // 0 = flash, 1 = RAM
     input  wire [15:0] addr,
     input  wire [15:0] data_in,
-    output reg  [15:0] data_out,
+    output wire [15:0] data_out,
 
     output wire        spi_clk,
     output wire        spi_flash_cs,  // active low
@@ -1148,7 +1136,6 @@ module qspi_memory_interface (
       core_start_read  <= 1'b0;
       core_start_write <= 1'b0;
       core_target_ram  <= 1'b0;
-      data_out         <= 16'h0000;
     end
     else
     begin
@@ -1214,8 +1201,6 @@ module qspi_memory_interface (
         begin
           if (!core_busy)
           begin
-            if (op_is_read)
-              data_out <= core_read_word;
             busy       <= 1'b0;
             op_is_read <= 1'b0;
             wstate     <= W_IDLE;
@@ -1519,6 +1504,7 @@ module qspi_memory_interface (
 
   assign core_busy      = (core_state != C_IDLE);
   assign core_read_word = core_read_word_r;
+  assign data_out       = core_read_word;
 
   // Address mapping. CPU address is word address, external memory is byte address.
   wire [23:0] flash_byte_addr = {7'b0000000, core_addr_cpu, 1'b0};
@@ -1828,51 +1814,60 @@ module shared_pin_controller3 (
     localparam PIN_OP_WRITE_PIN = 2'd2;
     localparam PIN_OP_WAIT_PIN  = 2'd3;
 
-    reg pin_bit0;
-    reg pin_bit1;
-    reg pin_bit2;
+    reg [1:0] rr_ptr;
+    reg       grant_valid;
+    reg [1:0] grant_idx;
+
+    reg [1:0] sel_op;
+    reg [2:0] sel_pin;
+    reg       sel_wdata;
+    reg [15:0] sel_rdata;
+
+    wire ready0 = req0 && ((op0 != PIN_OP_WAIT_PIN) || (gpio_in[pin0] == wdata0));
+    wire ready1 = req1 && ((op1 != PIN_OP_WAIT_PIN) || (gpio_in[pin1] == wdata1));
+    wire ready2 = req2 && ((op2 != PIN_OP_WAIT_PIN) || (gpio_in[pin2] == wdata2));
 
     always @(*) begin
-        case (pin0)
-            3'd0: pin_bit0 = gpio_in[0];
-            3'd1: pin_bit0 = gpio_in[1];
-            3'd2: pin_bit0 = gpio_in[2];
-            3'd3: pin_bit0 = gpio_in[3];
-            3'd4: pin_bit0 = gpio_in[4];
-            3'd5: pin_bit0 = gpio_in[5];
-            3'd6: pin_bit0 = gpio_in[6];
-            3'd7: pin_bit0 = gpio_in[7];
-            default: pin_bit0 = 1'b0;
+        grant_valid = 1'b0;
+        grant_idx   = 2'd0;
+
+        case (rr_ptr)
+            2'd0: begin
+                if (ready0) begin grant_valid = 1'b1; grant_idx = 2'd0; end
+                else if (ready1) begin grant_valid = 1'b1; grant_idx = 2'd1; end
+                else if (ready2) begin grant_valid = 1'b1; grant_idx = 2'd2; end
+            end
+            2'd1: begin
+                if (ready1) begin grant_valid = 1'b1; grant_idx = 2'd1; end
+                else if (ready2) begin grant_valid = 1'b1; grant_idx = 2'd2; end
+                else if (ready0) begin grant_valid = 1'b1; grant_idx = 2'd0; end
+            end
+            default: begin
+                if (ready2) begin grant_valid = 1'b1; grant_idx = 2'd2; end
+                else if (ready0) begin grant_valid = 1'b1; grant_idx = 2'd0; end
+                else if (ready1) begin grant_valid = 1'b1; grant_idx = 2'd1; end
+            end
+        endcase
+    end
+
+    always @(*) begin
+        case (grant_idx)
+            2'd0: begin sel_op = op0; sel_pin = pin0; sel_wdata = wdata0; end
+            2'd1: begin sel_op = op1; sel_pin = pin1; sel_wdata = wdata1; end
+            default: begin sel_op = op2; sel_pin = pin2; sel_wdata = wdata2; end
         endcase
 
-        case (pin1)
-            3'd0: pin_bit1 = gpio_in[0];
-            3'd1: pin_bit1 = gpio_in[1];
-            3'd2: pin_bit1 = gpio_in[2];
-            3'd3: pin_bit1 = gpio_in[3];
-            3'd4: pin_bit1 = gpio_in[4];
-            3'd5: pin_bit1 = gpio_in[5];
-            3'd6: pin_bit1 = gpio_in[6];
-            3'd7: pin_bit1 = gpio_in[7];
-            default: pin_bit1 = 1'b0;
-        endcase
-
-        case (pin2)
-            3'd0: pin_bit2 = gpio_in[0];
-            3'd1: pin_bit2 = gpio_in[1];
-            3'd2: pin_bit2 = gpio_in[2];
-            3'd3: pin_bit2 = gpio_in[3];
-            3'd4: pin_bit2 = gpio_in[4];
-            3'd5: pin_bit2 = gpio_in[5];
-            3'd6: pin_bit2 = gpio_in[6];
-            3'd7: pin_bit2 = gpio_in[7];
-            default: pin_bit2 = 1'b0;
+        case (sel_op)
+            PIN_OP_READ_ALL:  sel_rdata = {8'd0, gpio_in};
+            PIN_OP_READ_PIN:  sel_rdata = {15'd0, gpio_in[sel_pin]};
+            default:          sel_rdata = 16'd0;
         endcase
     end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             gpio_out <= 8'd0;
+            rr_ptr   <= 2'd0;
 
             done0 <= 1'b0;
             done1 <= 1'b0;
@@ -1886,114 +1881,25 @@ module shared_pin_controller3 (
             done1 <= 1'b0;
             done2 <= 1'b0;
 
-            rdata0 <= 16'd0;
-            rdata1 <= 16'd0;
-            rdata2 <= 16'd0;
+            if (grant_valid) begin
+                if (sel_op == PIN_OP_WRITE_PIN)
+                    gpio_out[sel_pin] <= sel_wdata;
 
-            if (req0) begin
-                case (op0)
-                    PIN_OP_READ_ALL: begin
-                        rdata0 <= {8'd0, gpio_in};
+                case (grant_idx)
+                    2'd0: begin
+                        rdata0 <= sel_rdata;
                         done0  <= 1'b1;
+                        rr_ptr <= 2'd1;
                     end
-
-                    PIN_OP_READ_PIN: begin
-                        rdata0 <= {15'd0, pin_bit0};
-                        done0  <= 1'b1;
-                    end
-
-                    PIN_OP_WRITE_PIN: begin
-                        case (pin0)
-                            3'd0: gpio_out[0] <= wdata0;
-                            3'd1: gpio_out[1] <= wdata0;
-                            3'd2: gpio_out[2] <= wdata0;
-                            3'd3: gpio_out[3] <= wdata0;
-                            3'd4: gpio_out[4] <= wdata0;
-                            3'd5: gpio_out[5] <= wdata0;
-                            3'd6: gpio_out[6] <= wdata0;
-                            3'd7: gpio_out[7] <= wdata0;
-                        endcase
-                        rdata0 <= 16'd0;
-                        done0  <= 1'b1;
-                    end
-
-                    PIN_OP_WAIT_PIN: begin
-                        if (pin_bit0 == wdata0) begin
-                            rdata0 <= 16'd0;
-                            done0  <= 1'b1;
-                        end
-                    end
-                endcase
-            end
-
-            if (req1) begin
-                case (op1)
-                    PIN_OP_READ_ALL: begin
-                        rdata1 <= {8'd0, gpio_in};
+                    2'd1: begin
+                        rdata1 <= sel_rdata;
                         done1  <= 1'b1;
+                        rr_ptr <= 2'd2;
                     end
-
-                    PIN_OP_READ_PIN: begin
-                        rdata1 <= {15'd0, pin_bit1};
-                        done1  <= 1'b1;
-                    end
-
-                    PIN_OP_WRITE_PIN: begin
-                        case (pin1)
-                            3'd0: gpio_out[0] <= wdata1;
-                            3'd1: gpio_out[1] <= wdata1;
-                            3'd2: gpio_out[2] <= wdata1;
-                            3'd3: gpio_out[3] <= wdata1;
-                            3'd4: gpio_out[4] <= wdata1;
-                            3'd5: gpio_out[5] <= wdata1;
-                            3'd6: gpio_out[6] <= wdata1;
-                            3'd7: gpio_out[7] <= wdata1;
-                        endcase
-                        rdata1 <= 16'd0;
-                        done1  <= 1'b1;
-                    end
-
-                    PIN_OP_WAIT_PIN: begin
-                        if (pin_bit1 == wdata1) begin
-                            rdata1 <= 16'd0;
-                            done1  <= 1'b1;
-                        end
-                    end
-                endcase
-            end
-
-            if (req2) begin
-                case (op2)
-                    PIN_OP_READ_ALL: begin
-                        rdata2 <= {8'd0, gpio_in};
+                    default: begin
+                        rdata2 <= sel_rdata;
                         done2  <= 1'b1;
-                    end
-
-                    PIN_OP_READ_PIN: begin
-                        rdata2 <= {15'd0, pin_bit2};
-                        done2  <= 1'b1;
-                    end
-
-                    PIN_OP_WRITE_PIN: begin
-                        case (pin2)
-                            3'd0: gpio_out[0] <= wdata2;
-                            3'd1: gpio_out[1] <= wdata2;
-                            3'd2: gpio_out[2] <= wdata2;
-                            3'd3: gpio_out[3] <= wdata2;
-                            3'd4: gpio_out[4] <= wdata2;
-                            3'd5: gpio_out[5] <= wdata2;
-                            3'd6: gpio_out[6] <= wdata2;
-                            3'd7: gpio_out[7] <= wdata2;
-                        endcase
-                        rdata2 <= 16'd0;
-                        done2  <= 1'b1;
-                    end
-
-                    PIN_OP_WAIT_PIN: begin
-                        if (pin_bit2 == wdata2) begin
-                            rdata2 <= 16'd0;
-                            done2  <= 1'b1;
-                        end
+                        rr_ptr <= 2'd0;
                     end
                 endcase
             end

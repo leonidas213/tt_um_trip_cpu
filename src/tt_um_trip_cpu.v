@@ -18,14 +18,7 @@ module shared_alu_arbiter3 (
     input wire [15:0] a1,
     input wire [15:0] b1,
     output reg done1,
-    output wire [15:0] result1,
-
-    input wire req2,
-    input wire [2:0] op2,
-    input wire [15:0] a2,
-    input wire [15:0] b2,
-    output reg done2,
-    output wire [15:0] result2
+    output wire [15:0] result1
 );
 
     localparam ALU_ADD = 3'd0;
@@ -36,12 +29,12 @@ module shared_alu_arbiter3 (
     localparam ALU_SHL = 3'd5;
     localparam ALU_SHR = 3'd6;
 
-    reg [2:0] pending;
-    reg [1:0] rr_ptr;
+    reg [1:0] pending;
+    reg rr_ptr;
     reg [15:0] shared_result;
 
     reg grant_valid;
-    reg [1:0] grant_idx;
+    reg grant_idx;
 
     reg [2:0]  sel_op;
     reg [15:0] sel_a;
@@ -49,7 +42,6 @@ module shared_alu_arbiter3 (
 
     assign result0 = shared_result;
     assign result1 = shared_result;
-    assign result2 = shared_result;
 
     function [15:0] alu_calc;
         input [2:0] op;
@@ -71,58 +63,46 @@ module shared_alu_arbiter3 (
 
     always @(*) begin
         grant_valid = 1'b0;
-        grant_idx   = 2'd0;
+        grant_idx   = 1'b0;
 
         case (rr_ptr)
-            2'd0: begin
-                if (pending[0]) begin grant_valid = 1'b1; grant_idx = 2'd0; end
-                else if (pending[1]) begin grant_valid = 1'b1; grant_idx = 2'd1; end
-                else if (pending[2]) begin grant_valid = 1'b1; grant_idx = 2'd2; end
-            end
-            2'd1: begin
-                if (pending[1]) begin grant_valid = 1'b1; grant_idx = 2'd1; end
-                else if (pending[2]) begin grant_valid = 1'b1; grant_idx = 2'd2; end
-                else if (pending[0]) begin grant_valid = 1'b1; grant_idx = 2'd0; end
+            1'b0: begin
+                if (pending[0]) begin grant_valid = 1'b1; grant_idx = 1'b0; end
+                else if (pending[1]) begin grant_valid = 1'b1; grant_idx = 1'b1; end
             end
             default: begin
-                if (pending[2]) begin grant_valid = 1'b1; grant_idx = 2'd2; end
-                else if (pending[0]) begin grant_valid = 1'b1; grant_idx = 2'd0; end
-                else if (pending[1]) begin grant_valid = 1'b1; grant_idx = 2'd1; end
+                if (pending[1]) begin grant_valid = 1'b1; grant_idx = 1'b1; end
+                else if (pending[0]) begin grant_valid = 1'b1; grant_idx = 1'b0; end
             end
         endcase
     end
 
     always @(*) begin
         case (grant_idx)
-            2'd0: begin sel_op = op0; sel_a = a0; sel_b = b0; end
-            2'd1: begin sel_op = op1; sel_a = a1; sel_b = b1; end
-            default: begin sel_op = op2; sel_a = a2; sel_b = b2; end
+            1'b0: begin sel_op = op0; sel_a = a0; sel_b = b0; end
+            default: begin sel_op = op1; sel_a = a1; sel_b = b1; end
         endcase
     end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            pending       <= 3'd0;
-            rr_ptr        <= 2'd0;
+            pending       <= 2'd0;
+            rr_ptr        <= 1'b0;
             done0         <= 1'b0;
             done1         <= 1'b0;
-            done2         <= 1'b0;
             shared_result <= 16'd0;
         end else begin
             done0 <= 1'b0;
             done1 <= 1'b0;
-            done2 <= 1'b0;
 
             if (req0 && !pending[0]) pending[0] <= 1'b1;
             if (req1 && !pending[1]) pending[1] <= 1'b1;
-            if (req2 && !pending[2]) pending[2] <= 1'b1;
 
             if (grant_valid) begin
                 shared_result <= alu_calc(sel_op, sel_a, sel_b);
                 case (grant_idx)
-                    2'd0: begin done0 <= 1'b1; pending[0] <= 1'b0; rr_ptr <= 2'd1; end
-                    2'd1: begin done1 <= 1'b1; pending[1] <= 1'b0; rr_ptr <= 2'd2; end
-                    default: begin done2 <= 1'b1; pending[2] <= 1'b0; rr_ptr <= 2'd0; end
+                    1'b0: begin done0 <= 1'b1; pending[0] <= 1'b0; rr_ptr <= 1'b1; end
+                    default: begin done1 <= 1'b1; pending[1] <= 1'b0; rr_ptr <= 1'b0; end
                 endcase
             end
         end
@@ -206,6 +186,13 @@ module tiny_core (
     input  wire        pin_done,
     input  wire [15:0] pin_rdata,
 
+    // separate UART controller interface
+    output reg         uart_req,
+    output reg  [1:0]  uart_op,
+    output reg  [15:0] uart_wdata,
+    input  wire        uart_done,
+    input  wire [15:0] uart_rdata,
+
     // debug
     output wire [15:0] debug_pc,
     output wire [15:0] debug_r0,
@@ -223,7 +210,7 @@ module tiny_core (
   localparam OP_SUB     = 5'd5;
   localparam OP_JMP     = 5'd6;
   localparam OP_JZ      = 5'd7;
-  localparam OP_OUT     = 5'd8;
+  localparam OP_RESV08  = 5'd8;  // was OUT
   localparam OP_LD      = 5'd9;
   localparam OP_ST      = 5'd10;
   localparam OP_AND     = 5'd11;
@@ -241,7 +228,7 @@ module tiny_core (
   localparam OP_WAITPIN = 5'd23;
   localparam OP_IN      = 5'd24;
   localparam OP_SETPIN  = 5'd25;
-  localparam OP_GETPIN  = 5'd26;
+  localparam OP_UART    = 5'd26; // was GETPIN
   localparam OP_JNZ     = 5'd27;
   localparam OP_LDF     = 5'd28;
   localparam OP_LDREG   = 5'd29;
@@ -259,21 +246,27 @@ module tiny_core (
 
   // pin controller ops
   localparam PIN_OP_READ_ALL  = 2'd0;
-  localparam PIN_OP_READ_PIN  = 2'd1;
   localparam PIN_OP_WRITE_PIN = 2'd2;
   localparam PIN_OP_WAIT_PIN  = 2'd3;
 
-  // states
-  localparam ST_FETCH      = 3'd0;
-  localparam ST_WAIT_FETCH = 3'd1;
-  localparam ST_DECODE     = 3'd2;
-  localparam ST_WAIT_ALU   = 3'd3;
-  localparam ST_WAIT_MEM   = 3'd4;
-  localparam ST_HALTED     = 3'd5;
-  localparam ST_WAIT_PIN   = 3'd6;
-  localparam ST_SLEEP      = 3'd7;
+  // UART controller ops, selected by instr[6:5]
+  localparam UART_OP_STATUS = 2'd0; // read status into rd
+  localparam UART_OP_TX     = 2'd1; // attempt TX from rd[7:0]
+  localparam UART_OP_RX     = 2'd2; // read RX into rd, rd[15]=valid
+  localparam UART_OP_BAUD   = 2'd3; // baud_div <= rd
 
-  reg [2:0]  state;
+  // states
+  localparam ST_FETCH      = 4'd0;
+  localparam ST_WAIT_FETCH = 4'd1;
+  localparam ST_DECODE     = 4'd2;
+  localparam ST_WAIT_ALU   = 4'd3;
+  localparam ST_WAIT_MEM   = 4'd4;
+  localparam ST_HALTED     = 4'd5;
+  localparam ST_WAIT_PIN   = 4'd6;
+  localparam ST_SLEEP      = 4'd7;
+  localparam ST_WAIT_UART  = 4'd8;
+
+  reg [3:0]  state;
   reg [15:0] pc;
   reg [15:0] instr;
   reg [15:0] imm_reg;
@@ -297,6 +290,7 @@ module tiny_core (
   wire [6:0]  imm7;
   wire [2:0]  ev_id;
   wire        pin_val;
+  wire [1:0]  uart_subop;
   wire [15:0] rel11;
   wire [15:0] rel7;
 
@@ -314,6 +308,7 @@ module tiny_core (
   assign imm7    = instr[6:0];
   assign ev_id   = instr[2:0];
   assign pin_val = instr[3];
+  assign uart_subop = instr[6:5];
 
   assign rel11 = {{5{imm11[10]}}, imm11};
   assign rel7  = {{9{imm7[6]}}, imm7};
@@ -403,6 +398,10 @@ module tiny_core (
       pin_op    <= 2'd0;
       pin_id    <= 3'd0;
       pin_wdata <= 1'b0;
+
+      uart_req   <= 1'b0;
+      uart_op    <= 2'd0;
+      uart_wdata <= 16'd0;
     end
     else
     begin
@@ -411,6 +410,7 @@ module tiny_core (
       event_set <= 1'b0;
       event_clr <= 1'b0;
       pin_req   <= 1'b0;
+      uart_req  <= 1'b0;
 
       if (state == ST_WAIT_FETCH)
       begin
@@ -533,6 +533,28 @@ module tiny_core (
           sleep_count <= sleep_count - 8'd1;
         end
       end
+      else if (state == ST_WAIT_UART)
+      begin
+        uart_req   <= 1'b1;
+        uart_op    <= uart_subop;
+        uart_wdata <= rd_value;
+
+        if (uart_done)
+        begin
+          if ((uart_subop == UART_OP_STATUS) || (uart_subop == UART_OP_RX))
+          begin
+            case (pending_rd)
+              2'd0: r0 <= uart_rdata;
+              2'd1: r1 <= uart_rdata;
+              2'd2: r2 <= uart_rdata;
+              2'd3: r3 <= uart_rdata;
+            endcase
+          end
+
+          pc    <= pc + 16'd1;
+          state <= ST_FETCH;
+        end
+      end
       else if (core_en && !halted)
       begin
         case (state)
@@ -629,14 +651,6 @@ module tiny_core (
                   pc <= pc + 16'd1;
                 state <= ST_FETCH;
               end
-
-              OP_OUT:
-              begin
-                out_reg <= ra_value;
-                pc      <= pc + 16'd1;
-                state   <= ST_FETCH;
-              end
-
               OP_LD:
               begin
                 pending_rd        <= rd;
@@ -745,16 +759,13 @@ module tiny_core (
                 pending_pin_read <= 1'b0;
                 state            <= ST_WAIT_PIN;
               end
-
-              OP_GETPIN:
+              OP_UART:
               begin
-                pin_req          <= 1'b1;
-                pin_op           <= PIN_OP_READ_PIN;
-                pin_id           <= ev_id;
-                pin_wdata        <= 1'b0;
-                pending_rd       <= rd;
-                pending_pin_read <= 1'b1;
-                state            <= ST_WAIT_PIN;
+                uart_req   <= 1'b1;
+                uart_op    <= uart_subop;
+                uart_wdata <= rd_value;
+                pending_rd <= rd;
+                state      <= ST_WAIT_UART;
               end
 
               OP_LDF:
@@ -1043,6 +1054,444 @@ module shared_spi_mem_arbiter3 (
       endcase
     end
   end
+
+endmodule
+
+module shared_pin_controller3 (
+    input wire clk,
+    input wire rst_n,
+
+    // real separate pins
+    input  wire [7:0] gpio_in,
+    output reg  [7:0] gpio_out,
+
+    // core 0 request
+    input wire        req0,
+    input wire [1:0]  op0,
+    input wire [2:0]  pin0,
+    input wire        wdata0,
+    output reg        done0,
+    output reg [15:0] rdata0,
+
+    // core 1 request
+    input wire        req1,
+    input wire [1:0]  op1,
+    input wire [2:0]  pin1,
+    input wire        wdata1,
+    output reg        done1,
+    output reg [15:0] rdata1
+);
+
+    localparam PIN_OP_READ_ALL  = 2'd0;
+    localparam PIN_OP_READ_PIN  = 2'd1;
+    localparam PIN_OP_WRITE_PIN = 2'd2;
+    localparam PIN_OP_WAIT_PIN  = 2'd3;
+
+    reg pin_bit0;
+    reg pin_bit1;
+
+    always @(*) begin
+        case (pin0)
+            3'd0: pin_bit0 = gpio_in[0];
+            3'd1: pin_bit0 = gpio_in[1];
+            3'd2: pin_bit0 = gpio_in[2];
+            3'd3: pin_bit0 = gpio_in[3];
+            3'd4: pin_bit0 = gpio_in[4];
+            3'd5: pin_bit0 = gpio_in[5];
+            3'd6: pin_bit0 = gpio_in[6];
+            3'd7: pin_bit0 = gpio_in[7];
+            default: pin_bit0 = 1'b0;
+        endcase
+
+        case (pin1)
+            3'd0: pin_bit1 = gpio_in[0];
+            3'd1: pin_bit1 = gpio_in[1];
+            3'd2: pin_bit1 = gpio_in[2];
+            3'd3: pin_bit1 = gpio_in[3];
+            3'd4: pin_bit1 = gpio_in[4];
+            3'd5: pin_bit1 = gpio_in[5];
+            3'd6: pin_bit1 = gpio_in[6];
+            3'd7: pin_bit1 = gpio_in[7];
+            default: pin_bit1 = 1'b0;
+        endcase
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            gpio_out <= 8'd0;
+
+            done0 <= 1'b0;
+            done1 <= 1'b0;
+
+            rdata0 <= 16'd0;
+            rdata1 <= 16'd0;
+        end else begin
+            done0 <= 1'b0;
+            done1 <= 1'b0;
+
+            rdata0 <= 16'd0;
+            rdata1 <= 16'd0;
+
+            if (req0) begin
+                case (op0)
+                    PIN_OP_READ_ALL: begin
+                        rdata0 <= {8'd0, gpio_in};
+                        done0  <= 1'b1;
+                    end
+
+                    PIN_OP_READ_PIN: begin
+                        rdata0 <= {15'd0, pin_bit0};
+                        done0  <= 1'b1;
+                    end
+
+                    PIN_OP_WRITE_PIN: begin
+                        case (pin0)
+                            3'd0: gpio_out[0] <= wdata0;
+                            3'd1: gpio_out[1] <= wdata0;
+                            3'd2: gpio_out[2] <= wdata0;
+                            3'd3: gpio_out[3] <= wdata0;
+                            3'd4: gpio_out[4] <= wdata0;
+                            3'd5: gpio_out[5] <= wdata0;
+                            3'd6: gpio_out[6] <= wdata0;
+                            3'd7: gpio_out[7] <= wdata0;
+                        endcase
+                        rdata0 <= 16'd0;
+                        done0  <= 1'b1;
+                    end
+
+                    PIN_OP_WAIT_PIN: begin
+                        if (pin_bit0 == wdata0) begin
+                            rdata0 <= 16'd0;
+                            done0  <= 1'b1;
+                        end
+                    end
+                endcase
+            end
+
+            if (req1) begin
+                case (op1)
+                    PIN_OP_READ_ALL: begin
+                        rdata1 <= {8'd0, gpio_in};
+                        done1  <= 1'b1;
+                    end
+
+                    PIN_OP_READ_PIN: begin
+                        rdata1 <= {15'd0, pin_bit1};
+                        done1  <= 1'b1;
+                    end
+
+                    PIN_OP_WRITE_PIN: begin
+                        case (pin1)
+                            3'd0: gpio_out[0] <= wdata1;
+                            3'd1: gpio_out[1] <= wdata1;
+                            3'd2: gpio_out[2] <= wdata1;
+                            3'd3: gpio_out[3] <= wdata1;
+                            3'd4: gpio_out[4] <= wdata1;
+                            3'd5: gpio_out[5] <= wdata1;
+                            3'd6: gpio_out[6] <= wdata1;
+                            3'd7: gpio_out[7] <= wdata1;
+                        endcase
+                        rdata1 <= 16'd0;
+                        done1  <= 1'b1;
+                    end
+
+                    PIN_OP_WAIT_PIN: begin
+                        if (pin_bit1 == wdata1) begin
+                            rdata1 <= 16'd0;
+                            done1  <= 1'b1;
+                        end
+                    end
+                endcase
+            end
+        end
+    end
+
+endmodule
+
+module shared_uart_controller2_event (
+    input  wire        clk,
+    input  wire        rst_n,
+
+    // real UART pins
+    input  wire        uart_rx,
+    output wire        uart_tx,
+    output wire        uart_tx_oe,
+
+    // event output, connect to shared event unit as an extra SET source
+    output wire        uart_event_set,
+    output wire [2:0]  uart_event_id,
+
+    // core 0 request
+    input  wire        req0,
+    input  wire [1:0]  op0,
+    input  wire [15:0] wdata0,
+    output reg         done0,
+    output reg  [15:0] rdata0,
+
+    // core 1 request
+    input  wire        req1,
+    input  wire [1:0]  op1,
+    input  wire [15:0] wdata1,
+    output reg         done1,
+    output reg  [15:0] rdata1
+);
+
+    reg rr_ptr;
+
+    reg        grant_valid;
+    reg        grant_idx;
+    reg [1:0]  sel_op;
+    reg [15:0] sel_wdata;
+
+    reg        uart_req_i;
+    reg [1:0]  uart_op_i;
+    reg [15:0] uart_wdata_i;
+    wire       uart_done_i;
+    wire [15:0] uart_rdata_i;
+
+    always @(*) begin
+        grant_valid = 1'b0;
+        grant_idx   = 1'b0;
+
+        if (rr_ptr == 1'b0) begin
+            if (req0) begin grant_valid = 1'b1; grant_idx = 1'b0; end
+            else if (req1) begin grant_valid = 1'b1; grant_idx = 1'b1; end
+        end else begin
+            if (req1) begin grant_valid = 1'b1; grant_idx = 1'b1; end
+            else if (req0) begin grant_valid = 1'b1; grant_idx = 1'b0; end
+        end
+
+        if (grant_idx == 1'b0) begin
+            sel_op = op0;
+            sel_wdata = wdata0;
+        end else begin
+            sel_op = op1;
+            sel_wdata = wdata1;
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rr_ptr <= 1'b0;
+            done0 <= 1'b0;
+            done1 <= 1'b0;
+            rdata0 <= 16'd0;
+            rdata1 <= 16'd0;
+            uart_req_i <= 1'b0;
+            uart_op_i <= 2'd0;
+            uart_wdata_i <= 16'd0;
+        end else begin
+            done0 <= 1'b0;
+            done1 <= 1'b0;
+            uart_req_i <= 1'b0;
+
+            // Nonblocking: granted command completes immediately.
+            if (grant_valid) begin
+                uart_req_i   <= 1'b1;
+                uart_op_i    <= sel_op;
+                uart_wdata_i <= sel_wdata;
+
+                if (grant_idx == 1'b0) begin
+                    done0  <= uart_done_i;
+                    rdata0 <= uart_rdata_i;
+                    rr_ptr <= 1'b1;
+                end else begin
+                    done1  <= uart_done_i;
+                    rdata1 <= uart_rdata_i;
+                    rr_ptr <= 1'b0;
+                end
+            end
+        end
+    end
+
+    tiny_uart_core_nonblocking uart_core (
+        .clk(clk),
+        .rst_n(rst_n),
+
+        .req(uart_req_i),
+        .op(uart_op_i),
+        .wdata(uart_wdata_i),
+        .done(uart_done_i),
+        .rdata(uart_rdata_i),
+
+        .rx_event_set(uart_event_set),
+        .rx_event_id(uart_event_id),
+
+        .uart_rx(uart_rx),
+        .uart_tx(uart_tx),
+        .uart_tx_oe(uart_tx_oe)
+    );
+
+endmodule
+
+
+module tiny_uart_core_nonblocking (
+    input  wire        clk,
+    input  wire        rst_n,
+
+    input  wire        req,
+    input  wire [1:0]  op,
+    input  wire [15:0] wdata,
+    output reg         done,
+    output reg  [15:0] rdata,
+
+    output reg         rx_event_set,
+    output wire [2:0]  rx_event_id,
+
+    input  wire        uart_rx,
+    output reg         uart_tx,
+    output wire        uart_tx_oe
+);
+
+    localparam UART_OP_STATUS = 2'd0;
+    localparam UART_OP_TX     = 2'd1;
+    localparam UART_OP_RX     = 2'd2;
+    localparam UART_OP_BAUD   = 2'd3;
+
+    // RX event id fixed to ev7.
+    assign rx_event_id = 3'd7;
+
+    // UART TX should drive idle high when not transmitting, so OE is always enabled.
+    // If you later want half-duplex/open-drain behavior, change this to tx_busy.
+    assign uart_tx_oe = tx_busy;
+
+    reg [15:0] baud_div;
+
+    // TX
+    reg        tx_busy;
+    reg [9:0]  tx_shift;
+    reg [15:0] tx_baud_cnt;
+    reg [3:0]  tx_bit_cnt;
+    wire       tx_ready;
+    assign tx_ready = !tx_busy;
+
+    // RX
+    reg [1:0]  rx_sync;
+    reg        rx_busy;
+    reg [15:0] rx_baud_cnt;
+    reg [3:0]  rx_bit_cnt;
+    reg [7:0]  rx_shift;
+    reg [7:0]  rx_data;
+    reg        rx_valid;
+    reg        rx_overrun;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            baud_div <= 16'd433; // 50 MHz / 115200 - 1
+
+            uart_tx <= 1'b1;
+            tx_busy <= 1'b0;
+            tx_shift <= 10'h3FF;
+            tx_baud_cnt <= 16'd0;
+            tx_bit_cnt <= 4'd0;
+
+            rx_sync <= 2'b11;
+            rx_busy <= 1'b0;
+            rx_baud_cnt <= 16'd0;
+            rx_bit_cnt <= 4'd0;
+            rx_shift <= 8'd0;
+            rx_data <= 8'd0;
+            rx_valid <= 1'b0;
+            rx_overrun <= 1'b0;
+
+            done <= 1'b0;
+            rdata <= 16'd0;
+            rx_event_set <= 1'b0;
+        end else begin
+            done <= 1'b0;
+            rdata <= 16'd0;
+            rx_event_set <= 1'b0;
+
+            // TX engine
+            if (tx_busy) begin
+                if (tx_baud_cnt != 16'd0) begin
+                    tx_baud_cnt <= tx_baud_cnt - 16'd1;
+                end else begin
+                    tx_baud_cnt <= baud_div;
+                    tx_shift <= {1'b1, tx_shift[9:1]};
+                    tx_bit_cnt <= tx_bit_cnt + 4'd1;
+                    uart_tx <= tx_shift[1];
+
+                    if (tx_bit_cnt == 4'd9) begin
+                        tx_busy <= 1'b0;
+                        uart_tx <= 1'b1;
+                    end
+                end
+            end
+
+            // RX engine
+            rx_sync <= {rx_sync[0], uart_rx};
+
+            if (!rx_busy) begin
+                if (rx_sync[1] && !rx_sync[0]) begin
+                    rx_busy <= 1'b1;
+                    rx_baud_cnt <= baud_div + {1'b0, baud_div[15:1]};
+                    rx_bit_cnt <= 4'd0;
+                end
+            end else begin
+                if (rx_baud_cnt != 16'd0) begin
+                    rx_baud_cnt <= rx_baud_cnt - 16'd1;
+                end else begin
+                    rx_baud_cnt <= baud_div;
+
+                    if (rx_bit_cnt < 4'd8) begin
+                        rx_shift <= {rx_sync[1], rx_shift[7:1]};
+                        rx_bit_cnt <= rx_bit_cnt + 4'd1;
+                    end else begin
+                        rx_busy <= 1'b0;
+                        if (rx_valid) begin
+                            rx_overrun <= 1'b1;
+                        end else begin
+                            rx_data <= rx_shift;
+                            rx_valid <= 1'b1;
+                            rx_event_set <= 1'b1;
+                        end
+                    end
+                end
+            end
+
+            // Nonblocking command interface
+            if (req) begin
+                case (op)
+                    UART_OP_STATUS: begin
+                        // bit0=tx_ready, bit1=rx_valid, bit2=rx_overrun
+                        rdata <= {13'd0, rx_overrun, rx_valid, tx_ready};
+                        done <= 1'b1;
+                    end
+
+                    UART_OP_TX: begin
+                        if (tx_ready) begin
+                            tx_shift <= {1'b1, wdata[7:0], 1'b0};
+                            tx_busy <= 1'b1;
+                            tx_baud_cnt <= baud_div;
+                            tx_bit_cnt <= 4'd0;
+                            uart_tx <= 1'b0;
+                            rdata <= 16'd1; // accepted
+                        end else begin
+                            rdata <= 16'd0; // not accepted
+                        end
+                        done <= 1'b1;
+                    end
+
+                    UART_OP_RX: begin
+                        if (rx_valid) begin
+                            rdata <= {1'b1, 7'd0, rx_data}; // valid flag + byte
+                            rx_valid <= 1'b0;
+                        end else begin
+                            rdata <= 16'd0;
+                        end
+                        done <= 1'b1;
+                    end
+
+                    UART_OP_BAUD: begin
+                        baud_div <= wdata;
+                        rdata <= wdata;
+                        done <= 1'b1;
+                    end
+                endcase
+            end
+        end
+    end
 
 endmodule
 
@@ -1790,216 +2239,22 @@ module qspi_memory_interface (
 
 endmodule
 
-module shared_pin_controller3 (
-    input wire clk,
-    input wire rst_n,
 
-    // real separate pins
-    input  wire [7:0] gpio_in,
-    output reg  [7:0] gpio_out,
-
-    // core 0 request
-    input wire        req0,
-    input wire [1:0]  op0,
-    input wire [2:0]  pin0,
-    input wire        wdata0,
-    output reg        done0,
-    output reg [15:0] rdata0,
-
-    // core 1 request
-    input wire        req1,
-    input wire [1:0]  op1,
-    input wire [2:0]  pin1,
-    input wire        wdata1,
-    output reg        done1,
-    output reg [15:0] rdata1,
-
-    // core 2 request
-    input wire        req2,
-    input wire [1:0]  op2,
-    input wire [2:0]  pin2,
-    input wire        wdata2,
-    output reg        done2,
-    output reg [15:0] rdata2
+module Mux_2x1
+(
+    input [0:0] sel,
+    input in_0,
+    input in_1,
+    output reg out
 );
-
-    localparam PIN_OP_READ_ALL  = 2'd0;
-    localparam PIN_OP_READ_PIN  = 2'd1;
-    localparam PIN_OP_WRITE_PIN = 2'd2;
-    localparam PIN_OP_WAIT_PIN  = 2'd3;
-
-    reg pin_bit0;
-    reg pin_bit1;
-    reg pin_bit2;
-
-    always @(*) begin
-        case (pin0)
-            3'd0: pin_bit0 = gpio_in[0];
-            3'd1: pin_bit0 = gpio_in[1];
-            3'd2: pin_bit0 = gpio_in[2];
-            3'd3: pin_bit0 = gpio_in[3];
-            3'd4: pin_bit0 = gpio_in[4];
-            3'd5: pin_bit0 = gpio_in[5];
-            3'd6: pin_bit0 = gpio_in[6];
-            3'd7: pin_bit0 = gpio_in[7];
-            default: pin_bit0 = 1'b0;
-        endcase
-
-        case (pin1)
-            3'd0: pin_bit1 = gpio_in[0];
-            3'd1: pin_bit1 = gpio_in[1];
-            3'd2: pin_bit1 = gpio_in[2];
-            3'd3: pin_bit1 = gpio_in[3];
-            3'd4: pin_bit1 = gpio_in[4];
-            3'd5: pin_bit1 = gpio_in[5];
-            3'd6: pin_bit1 = gpio_in[6];
-            3'd7: pin_bit1 = gpio_in[7];
-            default: pin_bit1 = 1'b0;
-        endcase
-
-        case (pin2)
-            3'd0: pin_bit2 = gpio_in[0];
-            3'd1: pin_bit2 = gpio_in[1];
-            3'd2: pin_bit2 = gpio_in[2];
-            3'd3: pin_bit2 = gpio_in[3];
-            3'd4: pin_bit2 = gpio_in[4];
-            3'd5: pin_bit2 = gpio_in[5];
-            3'd6: pin_bit2 = gpio_in[6];
-            3'd7: pin_bit2 = gpio_in[7];
-            default: pin_bit2 = 1'b0;
+    always @ (*) begin
+        case (sel)
+            1'h0: out = in_0;
+            1'h1: out = in_1;
+            default:
+                out = 'h0;
         endcase
     end
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            gpio_out <= 8'd0;
-
-            done0 <= 1'b0;
-            done1 <= 1'b0;
-            done2 <= 1'b0;
-
-            rdata0 <= 16'd0;
-            rdata1 <= 16'd0;
-            rdata2 <= 16'd0;
-        end else begin
-            done0 <= 1'b0;
-            done1 <= 1'b0;
-            done2 <= 1'b0;
-
-            rdata0 <= 16'd0;
-            rdata1 <= 16'd0;
-            rdata2 <= 16'd0;
-
-            if (req0) begin
-                case (op0)
-                    PIN_OP_READ_ALL: begin
-                        rdata0 <= {8'd0, gpio_in};
-                        done0  <= 1'b1;
-                    end
-
-                    PIN_OP_READ_PIN: begin
-                        rdata0 <= {15'd0, pin_bit0};
-                        done0  <= 1'b1;
-                    end
-
-                    PIN_OP_WRITE_PIN: begin
-                        case (pin0)
-                            3'd0: gpio_out[0] <= wdata0;
-                            3'd1: gpio_out[1] <= wdata0;
-                            3'd2: gpio_out[2] <= wdata0;
-                            3'd3: gpio_out[3] <= wdata0;
-                            3'd4: gpio_out[4] <= wdata0;
-                            3'd5: gpio_out[5] <= wdata0;
-                            3'd6: gpio_out[6] <= wdata0;
-                            3'd7: gpio_out[7] <= wdata0;
-                        endcase
-                        rdata0 <= 16'd0;
-                        done0  <= 1'b1;
-                    end
-
-                    PIN_OP_WAIT_PIN: begin
-                        if (pin_bit0 == wdata0) begin
-                            rdata0 <= 16'd0;
-                            done0  <= 1'b1;
-                        end
-                    end
-                endcase
-            end
-
-            if (req1) begin
-                case (op1)
-                    PIN_OP_READ_ALL: begin
-                        rdata1 <= {8'd0, gpio_in};
-                        done1  <= 1'b1;
-                    end
-
-                    PIN_OP_READ_PIN: begin
-                        rdata1 <= {15'd0, pin_bit1};
-                        done1  <= 1'b1;
-                    end
-
-                    PIN_OP_WRITE_PIN: begin
-                        case (pin1)
-                            3'd0: gpio_out[0] <= wdata1;
-                            3'd1: gpio_out[1] <= wdata1;
-                            3'd2: gpio_out[2] <= wdata1;
-                            3'd3: gpio_out[3] <= wdata1;
-                            3'd4: gpio_out[4] <= wdata1;
-                            3'd5: gpio_out[5] <= wdata1;
-                            3'd6: gpio_out[6] <= wdata1;
-                            3'd7: gpio_out[7] <= wdata1;
-                        endcase
-                        rdata1 <= 16'd0;
-                        done1  <= 1'b1;
-                    end
-
-                    PIN_OP_WAIT_PIN: begin
-                        if (pin_bit1 == wdata1) begin
-                            rdata1 <= 16'd0;
-                            done1  <= 1'b1;
-                        end
-                    end
-                endcase
-            end
-
-            if (req2) begin
-                case (op2)
-                    PIN_OP_READ_ALL: begin
-                        rdata2 <= {8'd0, gpio_in};
-                        done2  <= 1'b1;
-                    end
-
-                    PIN_OP_READ_PIN: begin
-                        rdata2 <= {15'd0, pin_bit2};
-                        done2  <= 1'b1;
-                    end
-
-                    PIN_OP_WRITE_PIN: begin
-                        case (pin2)
-                            3'd0: gpio_out[0] <= wdata2;
-                            3'd1: gpio_out[1] <= wdata2;
-                            3'd2: gpio_out[2] <= wdata2;
-                            3'd3: gpio_out[3] <= wdata2;
-                            3'd4: gpio_out[4] <= wdata2;
-                            3'd5: gpio_out[5] <= wdata2;
-                            3'd6: gpio_out[6] <= wdata2;
-                            3'd7: gpio_out[7] <= wdata2;
-                        endcase
-                        rdata2 <= 16'd0;
-                        done2  <= 1'b1;
-                    end
-
-                    PIN_OP_WAIT_PIN: begin
-                        if (pin_bit2 == wdata2) begin
-                            rdata2 <= 16'd0;
-                            done2  <= 1'b1;
-                        end
-                    end
-                endcase
-            end
-        end
-    end
-
 endmodule
 
 
@@ -2026,11 +2281,11 @@ module tt_um_trip_cpu (
   wire s10;
   wire [15:0] s11;
   wire s12;
-  wire [15:0] s13;
-  wire s14;
+  wire s13;
+  wire [2:0] s14;
   wire s15;
-  wire [2:0] s16;
-  wire s17;
+  wire s16;
+  wire [2:0] s17;
   wire s18;
   wire [2:0] s19;
   wire [7:0] s20;
@@ -2039,37 +2294,47 @@ module tt_um_trip_cpu (
   wire s23;
   wire [15:0] s24;
   wire s25;
-  wire s26;
+  wire [15:0] s26;
   wire s27;
-  wire [15:0] s28;
-  wire [15:0] s29;
-  wire s30;
-  wire [1:0] s31;
-  wire [2:0] s32;
-  wire s33;
-  wire s34;
-  wire [15:0] s35;
+  wire s28;
+  wire s29;
+  wire [15:0] s30;
+  wire [15:0] s31;
+  wire s32;
+  wire [1:0] s33;
+  wire [2:0] s34;
+  wire s35;
   wire s36;
-  wire [15:0] s37;
-  wire s38;
+  wire [1:0] s37;
+  wire [15:0] s38;
   wire s39;
-  wire s40;
-  wire [15:0] s41;
+  wire [15:0] s40;
+  wire s41;
   wire [15:0] s42;
   wire s43;
-  wire [1:0] s44;
-  wire [2:0] s45;
+  wire [15:0] s44;
+  wire s45;
   wire s46;
   wire s47;
   wire [15:0] s48;
-  wire s49;
+  wire [15:0] s49;
   wire s50;
-  wire [15:0] s51;
-  wire s52;
+  wire [1:0] s51;
+  wire [2:0] s52;
   wire s53;
   wire s54;
-  wire [15:0] s55;
+  wire [1:0] s55;
   wire [15:0] s56;
+  wire s57;
+  wire [15:0] s58;
+  wire s59;
+  wire s60;
+  wire [15:0] s61;
+  wire s62;
+  wire s63;
+  wire s64;
+  wire [15:0] s65;
+  wire [15:0] s66;
   wire \sda-in ;
   wire spics_flash;
   wire spi_clock;
@@ -2077,14 +2342,18 @@ module tt_um_trip_cpu (
   wire [3:0] qspi_data_oe;
   wire [3:0] qspi_data_in;
   wire [3:0] qspi_data_out;
-  wire s57;
-  wire s58;
-  wire [15:0] s59;
+  wire [7:0] s67;
+  wire s68;
+  wire s69;
+  wire s70;
+  wire s71;
+  wire s72;
   assign qspi_data_in[0] = uio_in[1];
   assign qspi_data_in[1] = uio_in[2];
   assign qspi_data_in[2] = uio_in[4];
   assign qspi_data_in[3] = uio_in[5];
   assign \sda-in  = uio_in[7];
+  assign s68 = ui_in[7];
   // shared_alu_arbiter3
   shared_alu_arbiter3 shared_alu_arbiter3_i0 (
     .clk( clk ),
@@ -2097,29 +2366,23 @@ module tt_um_trip_cpu (
     .op1( s5 ),
     .a1( s6 ),
     .b1( s7 ),
-    .req2( s4 ),
-    .op2( s5 ),
-    .a2( s6 ),
-    .b2( s7 ),
     .done0( s8 ),
     .result0( s9 ),
     .done1( s10 ),
-    .result1( s11 ),
-    .done2( s12 ),
-    .result2( s13 )
+    .result1( s11 )
   );
   // shared_event_unit3
   shared_event_unit3 shared_event_unit3_i1 (
     .clk( clk ),
     .rst_n( rst_n ),
-    .set0( s14 ),
-    .clr0( s15 ),
-    .id0( s16 ),
-    .set1( s17 ),
-    .clr1( s18 ),
-    .id1( s19 ),
-    .set2( s17 ),
-    .clr2( s18 ),
+    .set0( s12 ),
+    .clr0( s13 ),
+    .id0( s14 ),
+    .set1( s15 ),
+    .clr1( s16 ),
+    .id1( s17 ),
+    .set2( s18 ),
+    .clr2( 1'b0 ),
     .id2( s19 ),
     .event_flags( s20 )
   );
@@ -2136,22 +2399,27 @@ module tt_um_trip_cpu (
     .event_flags( s20 ),
     .pin_done( s23 ),
     .pin_rdata( s24 ),
+    .uart_done( s25 ),
+    .uart_rdata( s26 ),
     .alu_req( s0 ),
     .alu_op( s1 ),
     .alu_a( s2 ),
     .alu_b( s3 ),
-    .mem_req( s25 ),
-    .mem_write( s26 ),
-    .mem_target( s27 ),
-    .mem_addr( s28 ),
-    .mem_wdata( s29 ),
-    .event_set( s14 ),
-    .event_clr( s15 ),
-    .event_id( s16 ),
-    .pin_req( s30 ),
-    .pin_op( s31 ),
-    .pin_id( s32 ),
-    .pin_wdata( s33 )
+    .mem_req( s27 ),
+    .mem_write( s28 ),
+    .mem_target( s29 ),
+    .mem_addr( s30 ),
+    .mem_wdata( s31 ),
+    .event_set( s12 ),
+    .event_clr( s13 ),
+    .event_id( s14 ),
+    .pin_req( s32 ),
+    .pin_op( s33 ),
+    .pin_id( s34 ),
+    .pin_wdata( s35 ),
+    .uart_req( s36 ),
+    .uart_op( s37 ),
+    .uart_wdata( s38 )
   );
   // tiny_core
   tiny_core tiny_core_i3 (
@@ -2161,106 +2429,124 @@ module tt_um_trip_cpu (
     .core_en( rst_n ),
     .alu_done( s10 ),
     .alu_result( s11 ),
-    .mem_done( s34 ),
-    .mem_rdata( s35 ),
+    .mem_done( s39 ),
+    .mem_rdata( s40 ),
     .event_flags( s20 ),
-    .pin_done( s36 ),
-    .pin_rdata( s37 ),
+    .pin_done( s41 ),
+    .pin_rdata( s42 ),
+    .uart_done( s43 ),
+    .uart_rdata( s44 ),
     .alu_req( s4 ),
     .alu_op( s5 ),
     .alu_a( s6 ),
     .alu_b( s7 ),
-    .mem_req( s38 ),
-    .mem_write( s39 ),
-    .mem_target( s40 ),
-    .mem_addr( s41 ),
-    .mem_wdata( s42 ),
-    .event_set( s17 ),
-    .event_clr( s18 ),
-    .event_id( s19 ),
-    .pin_req( s43 ),
-    .pin_op( s44 ),
-    .pin_id( s45 ),
-    .pin_wdata( s46 )
+    .mem_req( s45 ),
+    .mem_write( s46 ),
+    .mem_target( s47 ),
+    .mem_addr( s48 ),
+    .mem_wdata( s49 ),
+    .event_set( s15 ),
+    .event_clr( s16 ),
+    .event_id( s17 ),
+    .pin_req( s50 ),
+    .pin_op( s51 ),
+    .pin_id( s52 ),
+    .pin_wdata( s53 ),
+    .uart_req( s54 ),
+    .uart_op( s55 ),
+    .uart_wdata( s56 )
   );
   // shared_spi_mem_arbiter3
   shared_spi_mem_arbiter3 shared_spi_mem_arbiter3_i4 (
     .clk( clk ),
     .rst_n( rst_n ),
-    .req0( s25 ),
-    .write0( s26 ),
-    .target0( s27 ),
-    .addr0( s28 ),
-    .wdata0( s29 ),
-    .req1( s38 ),
-    .write1( s39 ),
-    .target1( s40 ),
-    .addr1( s41 ),
-    .wdata1( s42 ),
-    .req2( s38 ),
-    .write2( s39 ),
-    .target2( s40 ),
-    .addr2( s41 ),
-    .wdata2( s42 ),
-    .spi_ready( s47 ),
-    .spi_data_out( s48 ),
-    .spi_busy( s49 ),
+    .req0( s27 ),
+    .write0( s28 ),
+    .target0( s29 ),
+    .addr0( s30 ),
+    .wdata0( s31 ),
+    .req1( s45 ),
+    .write1( s46 ),
+    .target1( s47 ),
+    .addr1( s48 ),
+    .wdata1( s49 ),
+    .req2( s45 ),
+    .write2( s46 ),
+    .target2( s47 ),
+    .addr2( s48 ),
+    .wdata2( s49 ),
+    .spi_ready( s57 ),
+    .spi_data_out( s58 ),
+    .spi_busy( s59 ),
     .done0( s21 ),
     .rdata0( s22 ),
-    .done1( s34 ),
-    .rdata1( s35 ),
-    .done2( s50 ),
-    .rdata2( s51 ),
-    .spi_st( s52 ),
-    .spi_ld( s53 ),
-    .spi_target( s54 ),
-    .spi_addr( s55 ),
-    .spi_data_in( s56 )
+    .done1( s39 ),
+    .rdata1( s40 ),
+    .done2( s60 ),
+    .rdata2( s61 ),
+    .spi_st( s62 ),
+    .spi_ld( s63 ),
+    .spi_target( s64 ),
+    .spi_addr( s65 ),
+    .spi_data_in( s66 )
+  );
+  // shared_pin_controller3
+  shared_pin_controller3 shared_pin_controller3_i5 (
+    .clk( clk ),
+    .rst_n( rst_n ),
+    .gpio_in( ui_in ),
+    .req0( s32 ),
+    .op0( s33 ),
+    .pin0( s34 ),
+    .wdata0( s35 ),
+    .req1( s50 ),
+    .op1( s51 ),
+    .pin1( s52 ),
+    .wdata1( s53 ),
+    .gpio_out( s67 ),
+    .done0( s23 ),
+    .rdata0( s24 ),
+    .done1( s41 ),
+    .rdata1( s42 )
+  );
+  // shared_uart_controller2_event
+  shared_uart_controller2_event shared_uart_controller2_event_i6 (
+    .clk( clk ),
+    .rst_n( rst_n ),
+    .uart_rx( s68 ),
+    .req0( s36 ),
+    .op0( s37 ),
+    .wdata0( s38 ),
+    .req1( s54 ),
+    .op1( s55 ),
+    .wdata1( s56 ),
+    .uart_tx( s69 ),
+    .uart_tx_oe( s70 ),
+    .uart_event_set( s18 ),
+    .uart_event_id( s19 ),
+    .done0( s25 ),
+    .rdata0( s26 ),
+    .done1( s43 ),
+    .rdata1( s44 )
   );
   // qspi_memory_interface
-  qspi_memory_interface qspi_memory_interface_i5 (
+  qspi_memory_interface qspi_memory_interface_i7 (
     .clk( clk ),
     .spi_rst_n( rst_n ),
-    .st( s52 ),
-    .ld( s53 ),
-    .spi_target( s54 ),
-    .addr( s55 ),
-    .data_in( s56 ),
+    .st( s62 ),
+    .ld( s63 ),
+    .spi_target( s64 ),
+    .addr( s65 ),
+    .data_in( s66 ),
     .spi_data_in( qspi_data_in ),
-    .data_out( s48 ),
+    .data_out( s58 ),
     .spi_clk( spi_clock ),
     .spi_flash_cs( spics_flash ),
     .spi_ram_cs( spics_ram ),
     .spi_data_out( qspi_data_out ),
     .spi_data_oe( qspi_data_oe ),
-    .busy( s49 ),
-    .ready( s47 ),
-    .init_done_dbg( s57 )
-  );
-  // shared_pin_controller3
-  shared_pin_controller3 shared_pin_controller3_i6 (
-    .clk( clk ),
-    .rst_n( rst_n ),
-    .gpio_in( ui_in ),
-    .req0( s30 ),
-    .op0( s31 ),
-    .pin0( s32 ),
-    .wdata0( s33 ),
-    .req1( s43 ),
-    .op1( s44 ),
-    .pin1( s45 ),
-    .wdata1( s46 ),
-    .req2( s43 ),
-    .op2( s44 ),
-    .pin2( s45 ),
-    .wdata2( s46 ),
-    .gpio_out( uo_out ),
-    .done0( s23 ),
-    .rdata0( s24 ),
-    .done1( s36 ),
-    .rdata1( s37 ),
-    .done2( s58 ),
-    .rdata2( s59 )
+    .busy( s59 ),
+    .ready( s57 )
   );
   assign uio_out[0] = spics_flash;
   assign uio_out[1] = qspi_data_out[0];
@@ -2278,4 +2564,13 @@ module tt_um_trip_cpu (
   assign uio_oe[5] = qspi_data_oe[3];
   assign uio_oe[6] = 1'b1;
   assign uio_oe[7] = 1'b1;
+  assign s71 = s67[7];
+  Mux_2x1 Mux_2x1_i8 (
+    .sel( s70 ),
+    .in_0( s71 ),
+    .in_1( s69 ),
+    .out( s72 )
+  );
+  assign uo_out[6:0] = s67[6:0];
+  assign uo_out[7] = s72;
 endmodule

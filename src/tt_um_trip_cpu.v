@@ -350,9 +350,17 @@ module tiny_core (
       default: rb_value = 16'd0;
     endcase
 
-    // Direct indexed event select is smaller than an explicit 8-way case.
-    event_selected = event_flags[ev_id];
-  end
+    case (ev_id)
+      3'd0: event_selected = event_flags[0];
+      3'd1: event_selected = event_flags[1];
+      3'd2: event_selected = event_flags[2];
+      3'd3: event_selected = event_flags[3];
+      3'd4: event_selected = event_flags[4];
+      3'd5: event_selected = event_flags[5];
+      3'd6: event_selected = event_flags[6];
+      3'd7: event_selected = event_flags[7];
+      default: event_selected = 1'b0;
+    endcase  end
 
   always @(posedge clk or negedge rst_n)
   begin
@@ -810,7 +818,7 @@ module shared_spi_mem_arbiter3 (
     input wire [15:0] addr0,
     input wire [15:0] wdata0,
     output reg done0,
-    output wire [15:0] rdata0,
+    output reg [15:0] rdata0,
 
     input wire req1,
     input wire write1,
@@ -818,7 +826,7 @@ module shared_spi_mem_arbiter3 (
     input wire [15:0] addr1,
     input wire [15:0] wdata1,
     output reg done1,
-    output wire [15:0] rdata1,
+    output reg [15:0] rdata1,
 
     input wire req2,
     input wire write2,
@@ -826,7 +834,7 @@ module shared_spi_mem_arbiter3 (
     input wire [15:0] addr2,
     input wire [15:0] wdata2,
     output reg done2,
-    output wire [15:0] rdata2,
+    output reg [15:0] rdata2,
 
     // qspi_memory_interface side
     input wire        spi_ready,
@@ -851,6 +859,7 @@ module shared_spi_mem_arbiter3 (
   reg [1:0] rr_ptr;
   reg [1:0] active_idx;
   reg       active_write;
+  reg [15:0] active_wdata;
 
   reg grant_valid;
   reg [1:0] grant_idx;
@@ -859,12 +868,6 @@ module shared_spi_mem_arbiter3 (
   reg sel_target;
   reg [15:0] sel_addr;
   reg [15:0] sel_wdata;
-
-  // All cores can see the shared memory data bus. Only the core with done=1
-  // commits it, so three separate 16-bit rdata registers are unnecessary.
-  assign rdata0 = spi_data_out;
-  assign rdata1 = spi_data_out;
-  assign rdata2 = spi_data_out;
 
   always @(*)
   begin
@@ -933,10 +936,15 @@ module shared_spi_mem_arbiter3 (
       rr_ptr  <= 2'd0;
       active_idx <= 2'd0;
       active_write <= 1'b0;
+      active_wdata <= 16'd0;
 
       done0 <= 1'b0;
       done1 <= 1'b0;
       done2 <= 1'b0;
+
+      rdata0 <= 16'd0;
+      rdata1 <= 16'd0;
+      rdata2 <= 16'd0;
 
       spi_st      <= 1'b0;
       spi_ld      <= 1'b0;
@@ -960,6 +968,7 @@ module shared_spi_mem_arbiter3 (
           begin
             active_idx   <= grant_idx;
             active_write <= sel_write;
+            active_wdata <= sel_wdata;
             state        <= S_START;
           end
         end
@@ -997,18 +1006,21 @@ module shared_spi_mem_arbiter3 (
           case (active_idx)
             2'd0:
             begin
+              rdata0 <= active_write ? active_wdata : spi_data_out;
               done0  <= 1'b1;
               rr_ptr <= 2'd1;
             end
 
             2'd1:
             begin
+              rdata1 <= active_write ? active_wdata : spi_data_out;
               done1  <= 1'b1;
               rr_ptr <= 2'd2;
             end
 
             default:
             begin
+              rdata2 <= active_write ? active_wdata : spi_data_out;
               done2  <= 1'b1;
               rr_ptr <= 2'd0;
             end
@@ -1064,7 +1076,7 @@ module qspi_memory_interface (
     input  wire        spi_target,    // 0 = flash, 1 = RAM
     input  wire [15:0] addr,
     input  wire [15:0] data_in,
-    output wire [15:0] data_out,
+    output reg  [15:0] data_out,
 
     output wire        spi_clk,
     output wire        spi_flash_cs,  // active low
@@ -1136,6 +1148,7 @@ module qspi_memory_interface (
       core_start_read  <= 1'b0;
       core_start_write <= 1'b0;
       core_target_ram  <= 1'b0;
+      data_out         <= 16'h0000;
     end
     else
     begin
@@ -1201,6 +1214,8 @@ module qspi_memory_interface (
         begin
           if (!core_busy)
           begin
+            if (op_is_read)
+              data_out <= core_read_word;
             busy       <= 1'b0;
             op_is_read <= 1'b0;
             wstate     <= W_IDLE;
@@ -1238,7 +1253,7 @@ module qspi_memory_interface (
   // Default waits fit in 22 bits at 50 MHz:
   // 40 ms = 2,000,000 cycles. If you increase INIT_CLK_HZ a lot,
   // increase INIT_WAIT_BITS too.
-  localparam integer INIT_CLK_HZ      = 50000000;
+  localparam integer INIT_CLK_HZ      = 1;
   localparam integer INIT_WAIT_BITS   = 22;
   `ifdef COCOTB_SIM_FAST_INIT
   localparam [INIT_WAIT_BITS-1:0] INIT_POWER_WAIT_CYCLES      = 22'd02;
@@ -1504,7 +1519,6 @@ module qspi_memory_interface (
 
   assign core_busy      = (core_state != C_IDLE);
   assign core_read_word = core_read_word_r;
-  assign data_out       = core_read_word;
 
   // Address mapping. CPU address is word address, external memory is byte address.
   wire [23:0] flash_byte_addr = {7'b0000000, core_addr_cpu, 1'b0};
@@ -1814,60 +1828,51 @@ module shared_pin_controller3 (
     localparam PIN_OP_WRITE_PIN = 2'd2;
     localparam PIN_OP_WAIT_PIN  = 2'd3;
 
-    reg [1:0] rr_ptr;
-    reg       grant_valid;
-    reg [1:0] grant_idx;
-
-    reg [1:0] sel_op;
-    reg [2:0] sel_pin;
-    reg       sel_wdata;
-    reg [15:0] sel_rdata;
-
-    wire ready0 = req0 && ((op0 != PIN_OP_WAIT_PIN) || (gpio_in[pin0] == wdata0));
-    wire ready1 = req1 && ((op1 != PIN_OP_WAIT_PIN) || (gpio_in[pin1] == wdata1));
-    wire ready2 = req2 && ((op2 != PIN_OP_WAIT_PIN) || (gpio_in[pin2] == wdata2));
+    reg pin_bit0;
+    reg pin_bit1;
+    reg pin_bit2;
 
     always @(*) begin
-        grant_valid = 1'b0;
-        grant_idx   = 2'd0;
-
-        case (rr_ptr)
-            2'd0: begin
-                if (ready0) begin grant_valid = 1'b1; grant_idx = 2'd0; end
-                else if (ready1) begin grant_valid = 1'b1; grant_idx = 2'd1; end
-                else if (ready2) begin grant_valid = 1'b1; grant_idx = 2'd2; end
-            end
-            2'd1: begin
-                if (ready1) begin grant_valid = 1'b1; grant_idx = 2'd1; end
-                else if (ready2) begin grant_valid = 1'b1; grant_idx = 2'd2; end
-                else if (ready0) begin grant_valid = 1'b1; grant_idx = 2'd0; end
-            end
-            default: begin
-                if (ready2) begin grant_valid = 1'b1; grant_idx = 2'd2; end
-                else if (ready0) begin grant_valid = 1'b1; grant_idx = 2'd0; end
-                else if (ready1) begin grant_valid = 1'b1; grant_idx = 2'd1; end
-            end
-        endcase
-    end
-
-    always @(*) begin
-        case (grant_idx)
-            2'd0: begin sel_op = op0; sel_pin = pin0; sel_wdata = wdata0; end
-            2'd1: begin sel_op = op1; sel_pin = pin1; sel_wdata = wdata1; end
-            default: begin sel_op = op2; sel_pin = pin2; sel_wdata = wdata2; end
+        case (pin0)
+            3'd0: pin_bit0 = gpio_in[0];
+            3'd1: pin_bit0 = gpio_in[1];
+            3'd2: pin_bit0 = gpio_in[2];
+            3'd3: pin_bit0 = gpio_in[3];
+            3'd4: pin_bit0 = gpio_in[4];
+            3'd5: pin_bit0 = gpio_in[5];
+            3'd6: pin_bit0 = gpio_in[6];
+            3'd7: pin_bit0 = gpio_in[7];
+            default: pin_bit0 = 1'b0;
         endcase
 
-        case (sel_op)
-            PIN_OP_READ_ALL:  sel_rdata = {8'd0, gpio_in};
-            PIN_OP_READ_PIN:  sel_rdata = {15'd0, gpio_in[sel_pin]};
-            default:          sel_rdata = 16'd0;
+        case (pin1)
+            3'd0: pin_bit1 = gpio_in[0];
+            3'd1: pin_bit1 = gpio_in[1];
+            3'd2: pin_bit1 = gpio_in[2];
+            3'd3: pin_bit1 = gpio_in[3];
+            3'd4: pin_bit1 = gpio_in[4];
+            3'd5: pin_bit1 = gpio_in[5];
+            3'd6: pin_bit1 = gpio_in[6];
+            3'd7: pin_bit1 = gpio_in[7];
+            default: pin_bit1 = 1'b0;
+        endcase
+
+        case (pin2)
+            3'd0: pin_bit2 = gpio_in[0];
+            3'd1: pin_bit2 = gpio_in[1];
+            3'd2: pin_bit2 = gpio_in[2];
+            3'd3: pin_bit2 = gpio_in[3];
+            3'd4: pin_bit2 = gpio_in[4];
+            3'd5: pin_bit2 = gpio_in[5];
+            3'd6: pin_bit2 = gpio_in[6];
+            3'd7: pin_bit2 = gpio_in[7];
+            default: pin_bit2 = 1'b0;
         endcase
     end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             gpio_out <= 8'd0;
-            rr_ptr   <= 2'd0;
 
             done0 <= 1'b0;
             done1 <= 1'b0;
@@ -1881,25 +1886,114 @@ module shared_pin_controller3 (
             done1 <= 1'b0;
             done2 <= 1'b0;
 
-            if (grant_valid) begin
-                if (sel_op == PIN_OP_WRITE_PIN)
-                    gpio_out[sel_pin] <= sel_wdata;
+            rdata0 <= 16'd0;
+            rdata1 <= 16'd0;
+            rdata2 <= 16'd0;
 
-                case (grant_idx)
-                    2'd0: begin
-                        rdata0 <= sel_rdata;
+            if (req0) begin
+                case (op0)
+                    PIN_OP_READ_ALL: begin
+                        rdata0 <= {8'd0, gpio_in};
                         done0  <= 1'b1;
-                        rr_ptr <= 2'd1;
                     end
-                    2'd1: begin
-                        rdata1 <= sel_rdata;
+
+                    PIN_OP_READ_PIN: begin
+                        rdata0 <= {15'd0, pin_bit0};
+                        done0  <= 1'b1;
+                    end
+
+                    PIN_OP_WRITE_PIN: begin
+                        case (pin0)
+                            3'd0: gpio_out[0] <= wdata0;
+                            3'd1: gpio_out[1] <= wdata0;
+                            3'd2: gpio_out[2] <= wdata0;
+                            3'd3: gpio_out[3] <= wdata0;
+                            3'd4: gpio_out[4] <= wdata0;
+                            3'd5: gpio_out[5] <= wdata0;
+                            3'd6: gpio_out[6] <= wdata0;
+                            3'd7: gpio_out[7] <= wdata0;
+                        endcase
+                        rdata0 <= 16'd0;
+                        done0  <= 1'b1;
+                    end
+
+                    PIN_OP_WAIT_PIN: begin
+                        if (pin_bit0 == wdata0) begin
+                            rdata0 <= 16'd0;
+                            done0  <= 1'b1;
+                        end
+                    end
+                endcase
+            end
+
+            if (req1) begin
+                case (op1)
+                    PIN_OP_READ_ALL: begin
+                        rdata1 <= {8'd0, gpio_in};
                         done1  <= 1'b1;
-                        rr_ptr <= 2'd2;
                     end
-                    default: begin
-                        rdata2 <= sel_rdata;
+
+                    PIN_OP_READ_PIN: begin
+                        rdata1 <= {15'd0, pin_bit1};
+                        done1  <= 1'b1;
+                    end
+
+                    PIN_OP_WRITE_PIN: begin
+                        case (pin1)
+                            3'd0: gpio_out[0] <= wdata1;
+                            3'd1: gpio_out[1] <= wdata1;
+                            3'd2: gpio_out[2] <= wdata1;
+                            3'd3: gpio_out[3] <= wdata1;
+                            3'd4: gpio_out[4] <= wdata1;
+                            3'd5: gpio_out[5] <= wdata1;
+                            3'd6: gpio_out[6] <= wdata1;
+                            3'd7: gpio_out[7] <= wdata1;
+                        endcase
+                        rdata1 <= 16'd0;
+                        done1  <= 1'b1;
+                    end
+
+                    PIN_OP_WAIT_PIN: begin
+                        if (pin_bit1 == wdata1) begin
+                            rdata1 <= 16'd0;
+                            done1  <= 1'b1;
+                        end
+                    end
+                endcase
+            end
+
+            if (req2) begin
+                case (op2)
+                    PIN_OP_READ_ALL: begin
+                        rdata2 <= {8'd0, gpio_in};
                         done2  <= 1'b1;
-                        rr_ptr <= 2'd0;
+                    end
+
+                    PIN_OP_READ_PIN: begin
+                        rdata2 <= {15'd0, pin_bit2};
+                        done2  <= 1'b1;
+                    end
+
+                    PIN_OP_WRITE_PIN: begin
+                        case (pin2)
+                            3'd0: gpio_out[0] <= wdata2;
+                            3'd1: gpio_out[1] <= wdata2;
+                            3'd2: gpio_out[2] <= wdata2;
+                            3'd3: gpio_out[3] <= wdata2;
+                            3'd4: gpio_out[4] <= wdata2;
+                            3'd5: gpio_out[5] <= wdata2;
+                            3'd6: gpio_out[6] <= wdata2;
+                            3'd7: gpio_out[7] <= wdata2;
+                        endcase
+                        rdata2 <= 16'd0;
+                        done2  <= 1'b1;
+                    end
+
+                    PIN_OP_WAIT_PIN: begin
+                        if (pin_bit2 == wdata2) begin
+                            rdata2 <= 16'd0;
+                            done2  <= 1'b1;
+                        end
                     end
                 endcase
             end
@@ -1928,72 +2022,54 @@ module tt_um_trip_cpu (
   wire [15:0] s6;
   wire [15:0] s7;
   wire s8;
-  wire [2:0] s9;
-  wire [15:0] s10;
+  wire [15:0] s9;
+  wire s10;
   wire [15:0] s11;
   wire s12;
   wire [15:0] s13;
   wire s14;
-  wire [15:0] s15;
-  wire s16;
-  wire [15:0] s17;
+  wire s15;
+  wire [2:0] s16;
+  wire s17;
   wire s18;
-  wire s19;
-  wire [2:0] s20;
+  wire [2:0] s19;
+  wire [7:0] s20;
   wire s21;
-  wire s22;
-  wire [2:0] s23;
-  wire s24;
+  wire [15:0] s22;
+  wire s23;
+  wire [15:0] s24;
   wire s25;
-  wire [2:0] s26;
-  wire [7:0] s27;
-  wire s28;
+  wire s26;
+  wire s27;
+  wire [15:0] s28;
   wire [15:0] s29;
   wire s30;
-  wire [15:0] s31;
-  wire s32;
+  wire [1:0] s31;
+  wire [2:0] s32;
   wire s33;
   wire s34;
   wire [15:0] s35;
-  wire [15:0] s36;
-  wire s37;
-  wire [1:0] s38;
-  wire [2:0] s39;
+  wire s36;
+  wire [15:0] s37;
+  wire s38;
+  wire s39;
   wire s40;
-  wire s41;
+  wire [15:0] s41;
   wire [15:0] s42;
   wire s43;
-  wire [15:0] s44;
-  wire s45;
+  wire [1:0] s44;
+  wire [2:0] s45;
   wire s46;
   wire s47;
   wire [15:0] s48;
-  wire [15:0] s49;
+  wire s49;
   wire s50;
-  wire [1:0] s51;
-  wire [2:0] s52;
+  wire [15:0] s51;
+  wire s52;
   wire s53;
   wire s54;
   wire [15:0] s55;
-  wire s56;
-  wire [15:0] s57;
-  wire s58;
-  wire s59;
-  wire s60;
-  wire [15:0] s61;
-  wire [15:0] s62;
-  wire s63;
-  wire [1:0] s64;
-  wire [2:0] s65;
-  wire s66;
-  wire s67;
-  wire [15:0] s68;
-  wire s69;
-  wire s70;
-  wire s71;
-  wire s72;
-  wire [15:0] s73;
-  wire [15:0] s74;
+  wire [15:0] s56;
   wire \sda-in ;
   wire spics_flash;
   wire spi_clock;
@@ -2001,7 +2077,9 @@ module tt_um_trip_cpu (
   wire [3:0] qspi_data_oe;
   wire [3:0] qspi_data_in;
   wire [3:0] qspi_data_out;
-  wire s75;
+  wire s57;
+  wire s58;
+  wire [15:0] s59;
   assign qspi_data_in[0] = uio_in[1];
   assign qspi_data_in[1] = uio_in[2];
   assign qspi_data_in[2] = uio_in[4];
@@ -2019,31 +2097,31 @@ module tt_um_trip_cpu (
     .op1( s5 ),
     .a1( s6 ),
     .b1( s7 ),
-    .req2( s8 ),
-    .op2( s9 ),
-    .a2( s10 ),
-    .b2( s11 ),
-    .done0( s12 ),
-    .result0( s13 ),
-    .done1( s14 ),
-    .result1( s15 ),
-    .done2( s16 ),
-    .result2( s17 )
+    .req2( s4 ),
+    .op2( s5 ),
+    .a2( s6 ),
+    .b2( s7 ),
+    .done0( s8 ),
+    .result0( s9 ),
+    .done1( s10 ),
+    .result1( s11 ),
+    .done2( s12 ),
+    .result2( s13 )
   );
   // shared_event_unit3
   shared_event_unit3 shared_event_unit3_i1 (
     .clk( clk ),
     .rst_n( rst_n ),
-    .set0( s18 ),
-    .clr0( s19 ),
-    .id0( s20 ),
-    .set1( s21 ),
-    .clr1( s22 ),
-    .id1( s23 ),
-    .set2( s24 ),
-    .clr2( s25 ),
-    .id2( s26 ),
-    .event_flags( s27 )
+    .set0( s14 ),
+    .clr0( s15 ),
+    .id0( s16 ),
+    .set1( s17 ),
+    .clr1( s18 ),
+    .id1( s19 ),
+    .set2( s17 ),
+    .clr2( s18 ),
+    .id2( s19 ),
+    .event_flags( s20 )
   );
   // tiny_core
   tiny_core tiny_core_i2 (
@@ -2051,29 +2129,29 @@ module tt_um_trip_cpu (
     .clk( clk ),
     .rst_n( rst_n ),
     .core_en( rst_n ),
-    .alu_done( s12 ),
-    .alu_result( s13 ),
-    .mem_done( s28 ),
-    .mem_rdata( s29 ),
-    .event_flags( s27 ),
-    .pin_done( s30 ),
-    .pin_rdata( s31 ),
+    .alu_done( s8 ),
+    .alu_result( s9 ),
+    .mem_done( s21 ),
+    .mem_rdata( s22 ),
+    .event_flags( s20 ),
+    .pin_done( s23 ),
+    .pin_rdata( s24 ),
     .alu_req( s0 ),
     .alu_op( s1 ),
     .alu_a( s2 ),
     .alu_b( s3 ),
-    .mem_req( s32 ),
-    .mem_write( s33 ),
-    .mem_target( s34 ),
-    .mem_addr( s35 ),
-    .mem_wdata( s36 ),
-    .event_set( s18 ),
-    .event_clr( s19 ),
-    .event_id( s20 ),
-    .pin_req( s37 ),
-    .pin_op( s38 ),
-    .pin_id( s39 ),
-    .pin_wdata( s40 )
+    .mem_req( s25 ),
+    .mem_write( s26 ),
+    .mem_target( s27 ),
+    .mem_addr( s28 ),
+    .mem_wdata( s29 ),
+    .event_set( s14 ),
+    .event_clr( s15 ),
+    .event_id( s16 ),
+    .pin_req( s30 ),
+    .pin_op( s31 ),
+    .pin_id( s32 ),
+    .pin_wdata( s33 )
   );
   // tiny_core
   tiny_core tiny_core_i3 (
@@ -2081,138 +2159,108 @@ module tt_um_trip_cpu (
     .clk( clk ),
     .rst_n( rst_n ),
     .core_en( rst_n ),
-    .alu_done( s14 ),
-    .alu_result( s15 ),
-    .mem_done( s41 ),
-    .mem_rdata( s42 ),
-    .event_flags( s27 ),
-    .pin_done( s43 ),
-    .pin_rdata( s44 ),
+    .alu_done( s10 ),
+    .alu_result( s11 ),
+    .mem_done( s34 ),
+    .mem_rdata( s35 ),
+    .event_flags( s20 ),
+    .pin_done( s36 ),
+    .pin_rdata( s37 ),
     .alu_req( s4 ),
     .alu_op( s5 ),
     .alu_a( s6 ),
     .alu_b( s7 ),
-    .mem_req( s45 ),
-    .mem_write( s46 ),
-    .mem_target( s47 ),
-    .mem_addr( s48 ),
-    .mem_wdata( s49 ),
-    .event_set( s21 ),
-    .event_clr( s22 ),
-    .event_id( s23 ),
-    .pin_req( s50 ),
-    .pin_op( s51 ),
-    .pin_id( s52 ),
-    .pin_wdata( s53 )
-  );
-  // tiny_core
-  tiny_core tiny_core_i4 (
-    .RESET_PC( 16'b100 ),
-    .clk( clk ),
-    .rst_n( rst_n ),
-    .core_en( rst_n ),
-    .alu_done( s16 ),
-    .alu_result( s17 ),
-    .mem_done( s54 ),
-    .mem_rdata( s55 ),
-    .event_flags( s27 ),
-    .pin_done( s56 ),
-    .pin_rdata( s57 ),
-    .alu_req( s8 ),
-    .alu_op( s9 ),
-    .alu_a( s10 ),
-    .alu_b( s11 ),
-    .mem_req( s58 ),
-    .mem_write( s59 ),
-    .mem_target( s60 ),
-    .mem_addr( s61 ),
-    .mem_wdata( s62 ),
-    .event_set( s24 ),
-    .event_clr( s25 ),
-    .event_id( s26 ),
-    .pin_req( s63 ),
-    .pin_op( s64 ),
-    .pin_id( s65 ),
-    .pin_wdata( s66 )
+    .mem_req( s38 ),
+    .mem_write( s39 ),
+    .mem_target( s40 ),
+    .mem_addr( s41 ),
+    .mem_wdata( s42 ),
+    .event_set( s17 ),
+    .event_clr( s18 ),
+    .event_id( s19 ),
+    .pin_req( s43 ),
+    .pin_op( s44 ),
+    .pin_id( s45 ),
+    .pin_wdata( s46 )
   );
   // shared_spi_mem_arbiter3
-  shared_spi_mem_arbiter3 shared_spi_mem_arbiter3_i5 (
+  shared_spi_mem_arbiter3 shared_spi_mem_arbiter3_i4 (
     .clk( clk ),
     .rst_n( rst_n ),
-    .req0( s32 ),
-    .write0( s33 ),
-    .target0( s34 ),
-    .addr0( s35 ),
-    .wdata0( s36 ),
-    .req1( s45 ),
-    .write1( s46 ),
-    .target1( s47 ),
-    .addr1( s48 ),
-    .wdata1( s49 ),
-    .req2( s58 ),
-    .write2( s59 ),
-    .target2( s60 ),
-    .addr2( s61 ),
-    .wdata2( s62 ),
-    .spi_ready( s67 ),
-    .spi_data_out( s68 ),
-    .spi_busy( s69 ),
-    .done0( s28 ),
-    .rdata0( s29 ),
-    .done1( s41 ),
-    .rdata1( s42 ),
-    .done2( s54 ),
-    .rdata2( s55 ),
-    .spi_st( s70 ),
-    .spi_ld( s71 ),
-    .spi_target( s72 ),
-    .spi_addr( s73 ),
-    .spi_data_in( s74 )
+    .req0( s25 ),
+    .write0( s26 ),
+    .target0( s27 ),
+    .addr0( s28 ),
+    .wdata0( s29 ),
+    .req1( s38 ),
+    .write1( s39 ),
+    .target1( s40 ),
+    .addr1( s41 ),
+    .wdata1( s42 ),
+    .req2( s38 ),
+    .write2( s39 ),
+    .target2( s40 ),
+    .addr2( s41 ),
+    .wdata2( s42 ),
+    .spi_ready( s47 ),
+    .spi_data_out( s48 ),
+    .spi_busy( s49 ),
+    .done0( s21 ),
+    .rdata0( s22 ),
+    .done1( s34 ),
+    .rdata1( s35 ),
+    .done2( s50 ),
+    .rdata2( s51 ),
+    .spi_st( s52 ),
+    .spi_ld( s53 ),
+    .spi_target( s54 ),
+    .spi_addr( s55 ),
+    .spi_data_in( s56 )
   );
   // qspi_memory_interface
-  qspi_memory_interface qspi_memory_interface_i6 (
+  qspi_memory_interface qspi_memory_interface_i5 (
     .clk( clk ),
     .spi_rst_n( rst_n ),
-    .st( s70 ),
-    .ld( s71 ),
-    .spi_target( s72 ),
-    .addr( s73 ),
-    .data_in( s74 ),
+    .st( s52 ),
+    .ld( s53 ),
+    .spi_target( s54 ),
+    .addr( s55 ),
+    .data_in( s56 ),
     .spi_data_in( qspi_data_in ),
-    .data_out( s68 ),
+    .data_out( s48 ),
     .spi_clk( spi_clock ),
     .spi_flash_cs( spics_flash ),
     .spi_ram_cs( spics_ram ),
     .spi_data_out( qspi_data_out ),
     .spi_data_oe( qspi_data_oe ),
-    .busy( s69 ),
-    .ready( s67 ),
-    .init_done_dbg( s75 )
+    .busy( s49 ),
+    .ready( s47 ),
+    .init_done_dbg( s57 )
   );
   // shared_pin_controller3
-  shared_pin_controller3 shared_pin_controller3_i7 (
+  shared_pin_controller3 shared_pin_controller3_i6 (
     .clk( clk ),
     .rst_n( rst_n ),
     .gpio_in( ui_in ),
-    .req0( s37 ),
-    .op0( s38 ),
-    .pin0( s39 ),
-    .wdata0( s40 ),
-    .req1( s50 ),
-    .op1( s51 ),
-    .pin1( s52 ),
-    .wdata1( s53 ),
-    .req2( s63 ),
-    .op2( s64 ),
-    .pin2( s65 ),
-    .wdata2( s66 ),
+    .req0( s30 ),
+    .op0( s31 ),
+    .pin0( s32 ),
+    .wdata0( s33 ),
+    .req1( s43 ),
+    .op1( s44 ),
+    .pin1( s45 ),
+    .wdata1( s46 ),
+    .req2( s43 ),
+    .op2( s44 ),
+    .pin2( s45 ),
+    .wdata2( s46 ),
     .gpio_out( uo_out ),
-    .done0( s30 ),
-    .rdata0( s31 ),
-    .done1( s43 ),
-    .rdata1( s44 ),
-    .done2( s56 ),
-    .rdata2( s57 )
+    .done0( s23 ),
+    .rdata0( s24 ),
+    .done1( s36 ),
+    .rdata1( s37 ),
+    .done2( s58 ),
+    .rdata2( s59 )
   );
   assign uio_out[0] = spics_flash;
   assign uio_out[1] = qspi_data_out[0];
